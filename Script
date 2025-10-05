@@ -1,0 +1,354 @@
+#ou can Download the raw dataset from "https://www.kaggle.com/code/faisaljanjua0555/eda-video-games-sales/notebook"
+#start the cleaning process with this code below. This ipynp file was used with the cleaned data not the raw one.
+import pandas as pd
+import numpy as np
+
+# 1. Load dataset
+file_path = "/content/vgsales 2 (2).csv"  # change to your file path
+df = pd.read_csv(file_path)
+
+# 2. Remove rows with all null values
+df = df.dropna(how='all')
+
+# 3. Fill sales columns nulls with 0.0
+sales_columns = ['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales', 'Global_Sales']
+df[sales_columns] = df[sales_columns].fillna(0.0)
+
+# 4. Drop rows with missing key categorical data
+df = df.dropna(subset=['Name', 'Platform', 'Year', 'Genre', 'Publisher'])
+
+# 5. Convert all sales columns to float32
+df[sales_columns] = df[sales_columns].astype(np.float32)
+
+# 6. Clean Year column
+df = df[(df['Year'] >= 1970) & (df['Year'] <= 2025)]
+df['Year'] = df['Year'].astype(int)
+
+# 7. Standardize text columns (strip spaces, title case)
+text_columns = ['Name', 'Platform', 'Genre', 'Publisher']
+for col in text_columns:
+    df[col] = df[col].astype(str).str.strip().str.title()
+
+# 8. Fix Global_Sales if it doesn’t match sum of regions
+df['Global_Sales_Calc'] = df['NA_Sales'] + df['EU_Sales'] + df['JP_Sales'] + df['Other_Sales']
+df['Global_Sales'] = np.where(
+    np.isclose(df['Global_Sales'], df['Global_Sales_Calc'], atol=0.01),
+    df['Global_Sales'],
+    df['Global_Sales_Calc']
+)
+df = df.drop(columns=['Global_Sales_Calc'])
+
+# 9. Convert categorical columns to category type
+categorical_cols = ['Platform', 'Genre', 'Publisher']
+for col in categorical_cols:
+    df[col] = df[col].astype('category')
+
+# 10. Keep random 1000 rows
+df = df.sample(n=1000, random_state=42)
+
+# 11. Save cleaned dataset
+df.to_csv("/content/vgsales_cleaned.csv", index=False)
+
+print("Data cleaning complete. Shape:", df.shape)
+df.head()
+
+from google.colab import files
+
+uploaded = files.upload()
+
+for fn in uploaded.keys():
+  print('User uploaded file "{name}" with length {length} bytes'.format(
+      name=fn, length=len(uploaded[fn])))
+
+# Q1: Underperforming genres with growth potential
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+
+df = pd.read_excel("Cleaned VGsales (1).xlsx")
+
+# A: Descriptive - total sales per genre, mark underperformers (below median)
+genre_totals = df.groupby('Genre', dropna=False)['Global_Sales'].sum().reset_index().rename(columns={'Global_Sales':'TotalGlobalSales'})
+median_total = genre_totals['TotalGlobalSales'].median()
+underperformers = genre_totals[genre_totals['TotalGlobalSales'] < median_total].sort_values('TotalGlobalSales')
+print("Underperforming genres (total < median):")
+display(underperformers)
+
+# B: Trend detection - compute per-genre linear slope of yearly sales
+df_year = df.dropna(subset=['Year']).copy()
+genre_yearly = df_year.groupby(['Genre','Year'])['Global_Sales'].sum().reset_index()
+slopes = []
+for g in underperformers['Genre']:
+    gdf = genre_yearly[genre_yearly['Genre']==g]
+    if len(gdf) >= 3:
+        lr = LinearRegression().fit(gdf[['Year']], gdf['Global_Sales'])
+        slopes.append(lr.coef_[0])
+    else:
+        slopes.append(np.nan)
+underperformers['YearlySlope'] = slopes
+# Positive slope suggests growth momentum
+print("\nUnderperformers with YearlySlope (positive = recent growth):")
+display(underperformers.sort_values(['YearlySlope','TotalGlobalSales'], ascending=[False, True]).head(20))
+
+
+# Combine results: flag underperforming genres with positive slope and that have overlap with important features
+candidates = underperformers[(underperformers['YearlySlope']>0)].copy()
+print("\nCandidate underperforming genres with positive slope (growth potential):")
+display(candidates)
+
+# Visualize yearly sales trend for selected underperforming genres
+selected_genres = ['Puzzle','Adventure','Simulation','Strategy']
+filtered_genre_yearly = genre_yearly[genre_yearly['Genre'].isin(selected_genres)].copy()
+
+plt.figure(figsize=(12, 7))
+for genre in selected_genres:
+    genre_data = filtered_genre_yearly[filtered_genre_yearly['Genre'] == genre]
+    plt.plot(genre_data['Year'], genre_data['Global_Sales'], marker='o', label=genre)
+
+plt.xlabel('Year')
+plt.ylabel('Global Sales')
+plt.title('Yearly Global Sales for Selected Underperforming Genres')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Visualize the top-selling Puzzle games from 2005 to 2010
+plt.figure(figsize=(12, 7))
+plt.bar(puzzle_spike_games['Name'].head(10), puzzle_spike_games['Global_Sales'].head(10))
+plt.xlabel('Game Title')
+plt.ylabel('Global Sales')
+plt.title('Top 10 Puzzle Games (2005-2010) by Global Sales')
+plt.xticks(rotation=90)
+plt.tight_layout()
+plt.show()
+
+# Q2: Niche vs Mainstream growth/consistency and Clustering Analysis
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
+df = pd.read_excel("Cleaned VGsales (1).xlsx")
+# define niche genres (adjust if needed)
+niche_list = ['Puzzle','Adventure','Simulation','Strategy']
+df['MarketType'] = df['Genre'].apply(lambda x: 'Niche' if x in niche_list else 'Mainstream')
+
+# A: Yearly aggregation and rolling mean
+ts = df.dropna(subset=['Year']).groupby(['Year','MarketType'])['Global_Sales'].sum().reset_index()
+pivot = ts.pivot(index='Year', columns='MarketType', values='Global_Sales').fillna(0)
+pivot.rolling(window=3, min_periods=1).mean().plot(figsize=(10,5), marker='o')
+plt.title('3-year Rolling Mean: Niche vs Mainstream Global Sales')
+plt.ylabel('Global Sales')
+plt.show()
+
+# B: Coefficient of variation (CV) as consistency measure
+cv = ts.groupby('MarketType')['Global_Sales'].agg(lambda x: np.std(x)/np.mean(x) if np.mean(x)!=0 else np.nan)
+print("\nCoefficient of variation (lower = more consistent):")
+display(cv)
+
+# C: Clustering genres based on yearly sales patterns
+print("\nClustering genres based on yearly sales patterns:")
+
+# Prepare data for clustering: Pivot yearly sales by genre
+genre_yearly_pivot = df.dropna(subset=['Year']).groupby(['Genre', 'Year'])['Global_Sales'].sum().unstack(fill_value=0)
+
+# Standardize the data
+scaler = StandardScaler()
+scaled_genre_yearly = scaler.fit_transform(genre_yearly_pivot)
+
+# Apply PCA for dimensionality reduction (optional, but can help with visualization and noise)
+pca = PCA(n_components=2)
+pca_components = pca.fit_transform(scaled_genre_yearly)
+pca_df = pd.DataFrame(data = pca_components, columns = ['pca_1', 'pca_2'], index=genre_yearly_pivot.index)
+
+
+# Determine the optimal number of clusters (e.g., using the Elbow method - here we'll just pick a number for demonstration)
+n_clusters = 3 # You can experiment with different numbers of clusters
+
+# Apply K-Means clustering
+kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10) # Added n_init to suppress warning
+clusters = kmeans.fit_predict(scaled_genre_yearly)
+
+# Add cluster labels to the PCA dataframe
+pca_df['Cluster'] = clusters
+
+# Visualize the clusters
+plt.figure(figsize=(10, 7))
+scatter = plt.scatter(pca_df['pca_1'], pca_df['pca_2'], c=pca_df['Cluster'], cmap='viridis')
+
+# Add genre labels to the plot
+for i, genre in enumerate(pca_df.index):
+    plt.annotate(genre, (pca_df['pca_1'].iloc[i], pca_df['pca_2'].iloc[i]), textcoords="offset points", xytext=(5,5), ha='center')
+
+plt.title('Genre Clusters based on Yearly Global Sales (PCA Reduced)')
+plt.xlabel('PCA Component 1')
+plt.ylabel('PCA Component 2')
+plt.colorbar(scatter, label='Cluster')
+plt.grid(True)
+plt.show()
+
+# Display which genres belong to each cluster
+print("\nGenres in each cluster:")
+for i in range(n_clusters):
+    cluster_genres = pca_df[pca_df['Cluster'] == i].index.tolist()
+    print(f"Cluster {i}: {cluster_genres}")
+
+# Q3: Platform-Publisher combos for niche performance
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+# from sklearn.inspection import permutation_importance
+from sklearn.metrics import classification_report, confusion_matrix # Import classification metrics
+
+df = pd.read_excel("Cleaned VGsales (1).xlsx")
+niche_list = ['Puzzle','Adventure','Simulation','Strategy']
+niche_df = df[df['Genre'].isin(niche_list)].copy()
+
+# A: define success and train classifier
+threshold = 1.0  # success = >=1M global sales
+niche_df['Success'] = (niche_df['Global_Sales'] >= threshold).astype(int)
+
+
+le_platform = LabelEncoder(); niche_df['PlatEnc'] = le_platform.fit_transform(niche_df['Platform'])
+le_publ = LabelEncoder(); niche_df['PublEnc'] = le_publ.fit_transform(niche_df['Publisher'])
+
+X = niche_df[['PlatEnc','PublEnc']]
+y = niche_df['Success']
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.25, random_state=42)
+
+clf = RandomForestClassifier(n_estimators=200, random_state=42)
+clf.fit(X_train, y_train)
+
+# Display Classifier test accuracy with interpretation
+accuracy = clf.score(X_test,y_test)
+print("Classifier test accuracy:", accuracy)
+print(f"\nInterpretation: The classifier achieved an accuracy of {accuracy:.2f} on the test set. This means it correctly predicted whether a niche game would achieve >= 1M global sales approximately {accuracy*100:.0f}% of the time based on its platform and publisher.")
+
+# Display Precision, Recall, and F1-score
+y_pred = clf.predict(X_test)
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+
+
+
+# Visualize Feature Importances from the Random Forest Classifier
+importances = pd.Series(clf.feature_importances_, index=X.columns).sort_values(ascending=False)
+
+plt.figure(figsize=(8, 6))
+importances.plot(kind='bar')
+plt.title('Random Forest Classifier Feature Importances')
+plt.ylabel('Importance')
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
+
+
+# B: Aggregation / descriptive stats: average sales per title per combo
+combo_stats = niche_df.groupby(['Platform', 'Publisher']).agg(
+    avg_sales=('Global_Sales','mean'),
+    total_sales=('Global_Sales','sum'),
+    titles=('Global_Sales','count')
+).reset_index().sort_values('avg_sales', ascending=False)
+print("\nTop combos by avg sales per title:")
+display(combo_stats.head(20))
+
+# Q4: Regions where niche genres perform well - Random Forest Regressor
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+
+df = pd.read_excel("Cleaned VGsales (1).xlsx")
+niche_list = ['Puzzle','Adventure','Simulation','Strategy']
+niche_df = df[df['Genre'].isin(niche_list)].copy()
+
+region_cols = ['NA_Sales','EU_Sales','JP_Sales','Other_Sales']
+fi_results = {} # Store feature importances for visualization
+
+# Encode features: use one-hot encoding for Genre only
+X = pd.get_dummies(niche_df[['Genre']], drop_first=True)
+
+# Train a RandomForestRegressor for each region and find feature importances
+for rc in region_cols:
+    y = niche_df[rc].fillna(0) # Use regional sales as the target variable
+    # Split data for training and testing (optional but good practice)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+
+    rf = RandomForestRegressor(n_estimators=200, random_state=42)
+    rf.fit(X_train, y_train)
+
+    # Get feature importances from the trained regressor
+    fi = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False).head(10)
+    fi_results[rc] = fi # Store results
+    print(f"\nTop predictors for {rc}:")
+    display(fi)
+
+# Visualize feature importances for regional sales (from RandomForestRegressor in Q4, using only Genre)
+import matplotlib.pyplot as plt
+
+
+for region, importances in fi_results.items():
+    plt.figure(figsize=(10, 6))
+    importances.plot(kind='bar')
+    plt.title(f'Genre popularity based on {region}')
+    plt.xlabel('Genre')
+    plt.ylabel('popularity')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.show()
+
+# Q5: Platforms offering best opportunities for niche success
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+
+df = pd.read_excel("Cleaned VGsales (1).xlsx") # Changed to read Excel file
+niche_list = ['Puzzle','Adventure','Simulation','Strategy']
+df['is_niche'] = df['Genre'].apply(lambda x: 1 if x in niche_list else 0)
+
+# A: Train classifier on niche subset to predict Success (>=1M)
+niche_df = df[df['is_niche']==1].copy()
+niche_df['Success'] = (niche_df['Global_Sales'] >= 1.0).astype(int)
+le_platform = LabelEncoder()
+niche_df['PlatEnc'] = le_platform.fit_transform(niche_df['Platform'].astype(str))
+# Use platform (and regional sales) as features
+X = niche_df[['PlatEnc','NA_Sales','EU_Sales','JP_Sales','Other_Sales']].fillna(0)
+y = niche_df['Success']
+clf = RandomForestClassifier(n_estimators=200, random_state=42)
+clf.fit(X, y)
+# average predicted probability per platform
+niche_df['pred_prob'] = clf.predict_proba(X)[:,1]
+platform_probs = niche_df.groupby('Platform')['pred_prob'].mean().reset_index().sort_values('pred_prob', ascending=False)
+print("Avg predicted success probability per platform (niche titles):")
+display(platform_probs)
+
+# B: Feature importance (platform effect)
+# We can inspect importance associated with PlatEnc and region cols
+fi = pd.Series(clf.feature_importances_, index=X.columns).sort_values(ascending=False)
+print("\nClassifier feature importances:")
+display(fi)
+
+# C: Uplift / lift descriptive: avg niche sales on platform / overall avg niche sales
+overall_avg = niche_df['Global_Sales'].mean()
+platform_stats = niche_df.groupby('Platform').agg(
+    avg_niche_sales=('Global_Sales','mean'),
+    total_niche_sales=('Global_Sales','sum'),
+    titles=('Global_Sales','count')
+).reset_index()
+platform_stats['lift'] = platform_stats['avg_niche_sales'] / overall_avg
+platform_rank = platform_stats.sort_values('lift', ascending=False)
+print("\nPlatform uplift (avg niche sales relative to overall niche avg):")
+display(platform_rank)
+
